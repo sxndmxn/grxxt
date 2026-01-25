@@ -12,7 +12,7 @@ use iced::widget::{
 use iced::{Alignment, Element, Font, Length, Subscription, Task};
 use std::time::Duration;
 
-const DEFAULT_SESSION: &str = "Hyprland";
+const DEFAULT_SESSION: &str = "/usr/local/bin/start-hyprland.sh";
 
 #[derive(Debug, Clone)]
 pub enum Message {
