@@ -89,6 +89,7 @@ impl Config {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests can unwrap")]
 mod tests {
     use super::*;
 

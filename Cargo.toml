@@ -20,15 +20,38 @@ chrono = "0.4"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
+thiserror = "1.0"
 
 [profile.release]
 lto = true
 strip = true
+
+[lints.rust]
+dead_code = "deny"
+unused_imports = "deny"
+unused_variables = "deny"
+unused_mut = "deny"
+unreachable_patterns = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
+
+# Restriction lints (cherry-picked)
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+mem_forget = "deny"
+wildcard_enum_match_arm = "deny"
+allow_attributes_without_reason = "deny"
+
 # Can't control transitive dependencies
 multiple_crate_versions = "allow"

@@ -1,8 +1,7 @@
 //! Application state management for the TUI greeter
 
 use crate::config::Config;
-use crate::greetd::{authenticate, AuthError};
-use crate::power;
+use crate::greetd;
 use crate::theme::Theme;
 
 /// Which input field is currently focused
@@ -77,84 +76,56 @@ impl App {
         };
     }
 
-    /// Handle submit action (Enter key)
-    pub fn submit(&mut self) -> Option<AuthResult> {
+    /// Handle submit action (Enter key).
+    /// Returns `true` if credentials are valid and authentication should proceed.
+    /// Caller must render before calling `authenticate()` (which blocks on IPC).
+    pub fn submit(&mut self) -> bool {
         if self.authenticating {
-            return None;
+            return false;
         }
 
-        // If on username, move to password
         if self.focus == Focus::Username {
             if self.username.is_empty() {
                 self.error = Some("Username required".to_string());
-                return None;
+                return false;
             }
             self.focus = Focus::Password;
-            return None;
+            return false;
         }
 
-        // Validate
         if self.username.is_empty() {
             self.error = Some("Username required".to_string());
             self.focus = Focus::Username;
-            return None;
+            return false;
         }
 
         if self.password.is_empty() {
             self.error = Some("Password required".to_string());
-            return None;
+            return false;
         }
 
-        // Start authentication
         self.authenticating = true;
         self.error = None;
-
-        Some(AuthResult::Pending)
+        true
     }
 
-    /// Perform the actual authentication (blocking)
-    pub fn do_authenticate(&mut self) -> AuthResult {
-        match authenticate(&self.username, &self.password, &self.session_cmd) {
-            Ok(()) => AuthResult::Success,
+    /// Perform authentication against greetd (blocking IPC).
+    /// Returns `true` on success (session started).
+    pub fn authenticate(&mut self) -> bool {
+        match greetd::authenticate(&self.username, &self.password, &self.session_cmd) {
+            Ok(()) => true,
             Err(e) => {
                 self.authenticating = false;
-                self.error = Some(format_auth_error(&e));
+                self.error = Some(e.to_string());
                 self.password.clear();
                 self.focus = Focus::Password;
-                AuthResult::Failed
+                false
             }
         }
-    }
-
-    /// Trigger shutdown
-    pub fn shutdown() {
-        power::shutdown();
-    }
-
-    /// Trigger reboot
-    pub fn reboot() {
-        power::reboot();
-    }
-
-    /// Trigger suspend
-    pub fn suspend() {
-        power::suspend();
     }
 
     /// Request application quit
     pub const fn quit(&mut self) {
         self.should_quit = true;
     }
-}
-
-/// Result of authentication attempt
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthResult {
-    Pending,
-    Success,
-    Failed,
-}
-
-fn format_auth_error(e: &AuthError) -> String {
-    e.to_string()
 }

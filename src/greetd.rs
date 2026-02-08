@@ -9,21 +9,14 @@ pub struct GreetdClient {
     stream: UnixStream,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    #[error("Connection failed: {0}")]
     ConnectionFailed(String),
+    #[error("Protocol error: {0}")]
     ProtocolError(String),
+    #[error("{0}")]
     AuthFailed(String),
-}
-
-impl std::fmt::Display for AuthError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ConnectionFailed(msg) => write!(f, "Connection failed: {msg}"),
-            Self::ProtocolError(msg) => write!(f, "Protocol error: {msg}"),
-            Self::AuthFailed(msg) => write!(f, "{msg}"),
-        }
-    }
 }
 
 impl GreetdClient {
@@ -106,24 +99,9 @@ impl GreetdClient {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn cancel_session(&mut self) -> Result<(), AuthError> {
-        self.send(&Request::CancelSession)?;
-        match self.receive()? {
-            Response::Success | Response::AuthMessage { .. } => Ok(()),
-            Response::Error {
-                error_type,
-                description,
-            } => Err(AuthError::AuthFailed(format_error(
-                &error_type,
-                &description,
-            ))),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum AuthState {
     NeedInput(String),
     NeedSecret(String),
@@ -157,13 +135,16 @@ pub fn authenticate(username: &str, password: &str, session_cmd: &str) -> Result
 
     match state {
         AuthState::Done => {
-            // Start the session
-            let cmd: Vec<String> =
-                shell_words::split(session_cmd).unwrap_or_else(|_| vec![session_cmd.to_string()]);
+            let cmd: Vec<String> = shell_words::split(session_cmd)
+                .unwrap_or_else(|_| vec![session_cmd.to_string()]);
             client.start_session(cmd)?;
             Ok(())
         }
         AuthState::Error(msg) => Err(AuthError::AuthFailed(msg)),
-        _ => Err(AuthError::ProtocolError("Unexpected auth state".into())),
+        AuthState::NeedInput(msg)
+        | AuthState::NeedSecret(msg)
+        | AuthState::Info(msg) => {
+            Err(AuthError::ProtocolError(format!("Unexpected auth state: {msg}")))
+        }
     }
 }

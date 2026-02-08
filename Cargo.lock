@@ -227,6 +227,7 @@ dependencies = [
  "ratatui",
  "serde",
  "shell-words",
+ "thiserror",
  "toml",
 ]
 

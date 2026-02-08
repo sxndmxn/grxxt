@@ -150,7 +150,7 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render a single input field
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, reason = "render helper takes individual style params")]
 fn render_input(
     frame: &mut Frame,
     value: &str,
@@ -183,8 +183,8 @@ fn render_input(
 
     // Show cursor if focused
     if focused {
-        #[allow(clippy::cast_possible_truncation)]
-        let cursor_x = area.x + 1 + value.len() as u16; // Input limited to ~30 chars
+        #[allow(clippy::cast_possible_truncation, reason = "input limited to ~30 chars, fits u16")]
+        let cursor_x = area.x + 1 + value.len() as u16;
         let cursor_y = area.y + 1;
         if cursor_x < area.x + area.width - 1 {
             frame.set_cursor_position((cursor_x, cursor_y));

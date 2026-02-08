@@ -52,6 +52,7 @@ fn parse_hex_color(s: &str) -> Option<Color> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests can unwrap")]
 mod tests {
     use super::*;
 

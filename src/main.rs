@@ -21,8 +21,9 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 
-use app::{App, AuthResult};
+use app::App;
 use config::Config;
+use power::{reboot, shutdown, suspend};
 
 fn main() -> Result<()> {
     // Load configuration
@@ -62,11 +63,12 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                     continue;
                 }
 
+                #[allow(clippy::wildcard_enum_match_arm, reason = "KeyCode has 20+ variants from external crate")]
                 match key.code {
                     // Power controls
-                    KeyCode::F(1) => App::shutdown(),
-                    KeyCode::F(2) => App::reboot(),
-                    KeyCode::F(3) => App::suspend(),
+                    KeyCode::F(1) => shutdown(),
+                    KeyCode::F(2) => reboot(),
+                    KeyCode::F(3) => suspend(),
 
                     // Quit (development only)
                     KeyCode::Esc => app.quit(),
@@ -87,13 +89,9 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
 
                     // Submit
                     KeyCode::Enter => {
-                        if app.submit() == Some(AuthResult::Pending) {
-                            // Need to render "authenticating..." before blocking
+                        if app.submit() {
                             terminal.draw(|frame| ui::render(frame, &app))?;
-
-                            // Perform blocking authentication
-                            if app.do_authenticate() == AuthResult::Success {
-                                // Successful auth - greetd starts the session
+                            if app.authenticate() {
                                 break;
                             }
                         }
