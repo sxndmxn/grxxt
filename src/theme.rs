@@ -1,150 +1,66 @@
-//! Zodiac brutalist theme for iced
-//!
-//! TODO: Add rem-like scalable sizing system
-//!   - Define BASE_SIZE constant (e.g., 16.0)
-//!   - Create size helper: `fn rem(multiplier: f32) -> f32 { BASE_SIZE * multiplier }`
-//!   - Replace hardcoded pixel values with rem(1.0), rem(1.25), etc.
+//! Zodiac brutalist theme for ratatui
 
-use iced::widget::{button, container, text, text_input};
-use iced::{Border, Color, Theme};
+use ratatui::style::Color;
 
-// Zodiac color palette
-pub const BACKGROUND: Color = Color::from_rgb(
-    0x0b as f32 / 255.0,
-    0x0a as f32 / 255.0,
-    0x13 as f32 / 255.0,
-);
+use crate::config::ThemeConfig;
 
-pub const FOREGROUND: Color = Color::from_rgb(
-    0xf6 as f32 / 255.0,
-    0xf1 as f32 / 255.0,
-    0xe3 as f32 / 255.0,
-);
+/// Theme colors for the TUI
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub background: Color,
+    pub foreground: Color,
+    pub accent: Color,
+    pub error: Color,
+}
 
-pub const ACCENT: Color = Color::from_rgb(
-    0xf1 as f32 / 255.0,
-    0xc3 as f32 / 255.0,
-    0x5f as f32 / 255.0,
-);
-
-pub const ERROR: Color = Color::from_rgb(
-    0xd1 as f32 / 255.0,
-    0x4b as f32 / 255.0,
-    0x64 as f32 / 255.0,
-);
-
-pub const TRANSPARENT: Color = Color::TRANSPARENT;
-
-// Text input styling
-pub fn text_input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let base = text_input::Style {
-        background: TRANSPARENT.into(),
-        border: Border {
-            color: FOREGROUND,
-            width: 0.0,
-            radius: 0.0.into(),
-        },
-        icon: FOREGROUND,
-        placeholder: Color {
-            a: 0.5,
-            ..FOREGROUND
-        },
-        value: FOREGROUND,
-        selection: ACCENT,
-    };
-
-    match status {
-        text_input::Status::Active => text_input::Style {
-            border: Border {
-                color: FOREGROUND,
-                width: 2.0,
-                radius: 0.0.into(),
-            },
-            ..base
-        },
-        text_input::Status::Hovered => text_input::Style {
-            border: Border {
-                color: ACCENT,
-                width: 2.0,
-                radius: 0.0.into(),
-            },
-            ..base
-        },
-        text_input::Status::Focused => text_input::Style {
-            border: Border {
-                color: ACCENT,
-                width: 2.0,
-                radius: 0.0.into(),
-            },
-            ..base
-        },
-        text_input::Status::Disabled => text_input::Style {
-            value: Color {
-                a: 0.3,
-                ..FOREGROUND
-            },
-            ..base
-        },
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::Rgb(0x0b, 0x0a, 0x13),
+            foreground: Color::Rgb(0xf6, 0xf1, 0xe3),
+            accent: Color::Rgb(0xf1, 0xc3, 0x5f),
+            error: Color::Rgb(0xd1, 0x4b, 0x64),
+        }
     }
 }
 
-// Password input styling (same as text input but for secret fields)
-pub fn password_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    text_input_style(theme, status)
-}
-
-// Container styling for the main background
-pub fn background_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(BACKGROUND.into()),
-        text_color: Some(FOREGROUND),
-        border: Border::default(),
-        ..Default::default()
+impl From<&ThemeConfig> for Theme {
+    fn from(config: &ThemeConfig) -> Self {
+        Self {
+            background: parse_hex_color(&config.background)
+                .unwrap_or(Color::Rgb(0x0b, 0x0a, 0x13)),
+            foreground: parse_hex_color(&config.foreground)
+                .unwrap_or(Color::Rgb(0xf6, 0xf1, 0xe3)),
+            accent: parse_hex_color(&config.accent).unwrap_or(Color::Rgb(0xf1, 0xc3, 0x5f)),
+            error: parse_hex_color(&config.error).unwrap_or(Color::Rgb(0xd1, 0x4b, 0x64)),
+        }
     }
 }
 
-// Error text styling
-pub fn error_text_style(_theme: &Theme) -> text::Style {
-    text::Style { color: Some(ERROR) }
-}
-
-// Normal text styling
-pub fn normal_text_style(_theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(FOREGROUND),
+/// Parse a hex color string like "#0b0a13" into a ratatui Color
+fn parse_hex_color(s: &str) -> Option<Color> {
+    let s = s.strip_prefix('#')?;
+    if s.len() != 6 {
+        return None;
     }
+
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+
+    Some(Color::Rgb(r, g, b))
 }
 
-// Power button styling (transparent background, accent on hover)
-pub fn power_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    button::Style {
-        background: Some(TRANSPARENT.into()),
-        text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => ACCENT,
-            _ => FOREGROUND,
-        },
-        border: Border::default(),
-        ..Default::default()
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// Clock text styling
-pub fn clock_text_style(_theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(FOREGROUND),
-    }
-}
-
-// Avatar container styling (subtle border)
-pub fn avatar_container_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(TRANSPARENT.into()),
-        text_color: Some(FOREGROUND),
-        border: Border {
-            color: FOREGROUND,
-            width: 2.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
+    #[test]
+    fn test_parse_hex_color() {
+        assert_eq!(parse_hex_color("#0b0a13"), Some(Color::Rgb(0x0b, 0x0a, 0x13)));
+        assert_eq!(parse_hex_color("#ffffff"), Some(Color::Rgb(0xff, 0xff, 0xff)));
+        assert_eq!(parse_hex_color("#000000"), Some(Color::Rgb(0x00, 0x00, 0x00)));
+        assert_eq!(parse_hex_color("invalid"), None);
+        assert_eq!(parse_hex_color("#fff"), None);
     }
 }

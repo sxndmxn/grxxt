@@ -19,9 +19,9 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuthError::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
-            AuthError::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
-            AuthError::AuthFailed(msg) => write!(f, "{}", msg),
+            Self::ConnectionFailed(msg) => write!(f, "Connection failed: {msg}"),
+            Self::ProtocolError(msg) => write!(f, "Protocol error: {msg}"),
+            Self::AuthFailed(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -37,7 +37,7 @@ impl GreetdClient {
         Ok(Self { stream })
     }
 
-    fn send(&mut self, request: Request) -> Result<(), AuthError> {
+    fn send(&mut self, request: &Request) -> Result<(), AuthError> {
         request
             .write_to(&mut self.stream)
             .map_err(|e| AuthError::ProtocolError(e.to_string()))
@@ -48,25 +48,24 @@ impl GreetdClient {
     }
 
     pub fn create_session(&mut self, username: &str) -> Result<(), AuthError> {
-        self.send(Request::CreateSession {
+        self.send(&Request::CreateSession {
             username: username.to_string(),
         })?;
 
         match self.receive()? {
-            Response::Success => Ok(()),
-            Response::AuthMessage { .. } => Ok(()),
+            Response::Success | Response::AuthMessage { .. } => Ok(()),
             Response::Error {
                 error_type,
                 description,
             } => Err(AuthError::AuthFailed(format_error(
-                error_type,
+                &error_type,
                 &description,
             ))),
         }
     }
 
     pub fn post_auth_response(&mut self, response: Option<String>) -> Result<AuthState, AuthError> {
-        self.send(Request::PostAuthMessageResponse { response })?;
+        self.send(&Request::PostAuthMessageResponse { response })?;
 
         match self.receive()? {
             Response::Success => Ok(AuthState::Done),
@@ -83,14 +82,14 @@ impl GreetdClient {
                 error_type,
                 description,
             } => Err(AuthError::AuthFailed(format_error(
-                error_type,
+                &error_type,
                 &description,
             ))),
         }
     }
 
     pub fn start_session(&mut self, cmd: Vec<String>) -> Result<(), AuthError> {
-        self.send(Request::StartSession { cmd, env: vec![] })?;
+        self.send(&Request::StartSession { cmd, env: vec![] })?;
 
         match self.receive()? {
             Response::Success => Ok(()),
@@ -98,26 +97,27 @@ impl GreetdClient {
                 error_type,
                 description,
             } => Err(AuthError::AuthFailed(format_error(
-                error_type,
+                &error_type,
                 &description,
             ))),
-            _ => Err(AuthError::ProtocolError("Unexpected response".into())),
+            Response::AuthMessage { .. } => {
+                Err(AuthError::ProtocolError("Unexpected response".into()))
+            }
         }
     }
 
     #[allow(dead_code)]
     pub fn cancel_session(&mut self) -> Result<(), AuthError> {
-        self.send(Request::CancelSession)?;
+        self.send(&Request::CancelSession)?;
         match self.receive()? {
-            Response::Success => Ok(()),
+            Response::Success | Response::AuthMessage { .. } => Ok(()),
             Response::Error {
                 error_type,
                 description,
             } => Err(AuthError::AuthFailed(format_error(
-                error_type,
+                &error_type,
                 &description,
             ))),
-            _ => Ok(()),
         }
     }
 }
@@ -132,7 +132,7 @@ pub enum AuthState {
     Done,
 }
 
-fn format_error(error_type: ErrorType, description: &str) -> String {
+fn format_error(error_type: &ErrorType, description: &str) -> String {
     match error_type {
         ErrorType::AuthError => {
             if description.is_empty() {

@@ -1,0 +1,10 @@
+# grxxt configuration
+# Install to: /etc/greetd/grxxt.toml
+
+session = "/home/sandman/.local/bin/start-hyprland.sh"
+
+[theme]
+background = "#0b0a13"
+foreground = "#f6f1e3"
+accent = "#f1c35f"
+error = "#d14b64"

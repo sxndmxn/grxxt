@@ -4,15 +4,31 @@ version = "0.1.0"
 edition = "2021"
 description = "Brutalist greetd greeter"
 authors = ["sandman"]
+license = "MIT"
+repository = "https://github.com/sandman/grxxt"
+readme = "README.md"
+keywords = ["greetd", "greeter", "tui", "login"]
+categories = ["command-line-utilities"]
 
 [dependencies]
-iced = { version = "0.13", features = ["tokio", "advanced", "image"] }
+ratatui = "0.29"
+crossterm = "0.28"
 greetd_ipc = { version = "0.10", features = ["sync-codec"] }
-tokio = { version = "1", features = ["rt", "net", "io-util", "sync"] }
 nix = { version = "0.29", features = ["user", "term"] }
 shell-words = "1.1"
 chrono = "0.4"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
 
 [profile.release]
 lto = true
 strip = true
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Can't control transitive dependencies
+multiple_crate_versions = "allow"
