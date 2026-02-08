@@ -11,6 +11,9 @@ use ratatui::{
 
 use crate::app::{App, Focus};
 
+/// Complement of the golden ratio (1 - 1/φ ≈ 0.382)
+const PHI_COMP: f32 = 0.382;
+
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -38,8 +41,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     // Split header into left (clock) and right (power buttons)
     let chunks = Layout::horizontal([
-        Constraint::Min(20),   // Clock
-        Constraint::Length(30), // Power buttons
+        Constraint::Ratio(618, 1000), // Clock (φ⁻¹)
+        Constraint::Ratio(382, 1000), // Power buttons (1 - φ⁻¹)
     ])
     .split(area);
 
@@ -80,16 +83,44 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 fn render_form(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    // Center the form vertically and horizontally
-    let form_width = 30_u16;
-    let form_height = 14_u16;
+    // Golden ratio form width: area.width * PHI_COMP, clamped [28, 50]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "area dimensions are small u16 values, product fits u16"
+    )]
+    let form_width = (f32::from(area.width) * PHI_COMP)
+        .round()
+        .clamp(28.0, 50.0) as u16;
 
+    // Fibonacci-based form height: avatar(5) + gap(2) + user(3) + gap(1) + pass(3) + gap(1) + msg(1) = 16
+    let form_height = 16_u16;
+
+    // Golden section vertical placement: form center at 38.2% from top
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "area dimensions are small u16 values, product fits u16"
+    )]
+    let y = area.y
+        + f32::from(area.height)
+            .mul_add(PHI_COMP, -(f32::from(form_height) / 2.0))
+            .round()
+            .max(0.0) as u16;
     let x = area.x + area.width.saturating_sub(form_width) / 2;
-    let y = area.y + area.height.saturating_sub(form_height) / 2;
     let form_area = Rect::new(x, y, form_width, form_height);
 
-    // Avatar (box with user icon)
-    let avatar_area = Rect::new(form_area.x + 10, form_area.y, 10, 5);
+    // Avatar: width = form_width * PHI_COMP, clamped min 8, centered in form
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "form_width is small u16, product fits u16"
+    )]
+    let avatar_width = (f32::from(form_width) * PHI_COMP)
+        .round()
+        .max(8.0) as u16;
+    let avatar_x = form_area.x + (form_width.saturating_sub(avatar_width)) / 2;
+    let avatar_area = Rect::new(avatar_x, form_area.y, avatar_width, 5);
     let avatar = Paragraph::new(Line::from(Span::styled(
         "󰀄",
         Style::default().fg(theme.foreground),
@@ -103,8 +134,8 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
     );
     frame.render_widget(avatar, avatar_area);
 
-    // Username input
-    let username_area = Rect::new(form_area.x, form_area.y + 6, form_width, 3);
+    // Fibonacci spacing: avatar(5) + gap(2) = offset 7
+    let username_area = Rect::new(form_area.x, form_area.y + 7, form_width, 3);
     render_input(
         frame,
         &app.username,
@@ -116,8 +147,8 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         username_area,
     );
 
-    // Password input
-    let password_area = Rect::new(form_area.x, form_area.y + 9, form_width, 3);
+    // Fibonacci spacing: username(3) + gap(1) = offset 11
+    let password_area = Rect::new(form_area.x, form_area.y + 11, form_width, 3);
     let masked_password = "*".repeat(app.password.len());
     render_input(
         frame,
@@ -130,8 +161,8 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         password_area,
     );
 
-    // Error or status message
-    let msg_area = Rect::new(form_area.x, form_area.y + 12, form_width, 1);
+    // Fibonacci spacing: password(3) + gap(1) = offset 15
+    let msg_area = Rect::new(form_area.x, form_area.y + 15, form_width, 1);
     if let Some(ref err) = app.error {
         let error = Paragraph::new(Line::from(Span::styled(
             err.to_uppercase(),
