@@ -4,7 +4,6 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
 
 const CONFIG_PATH: &str = "/etc/greetd/grxxt.toml";
 const DEFAULT_SESSION: &str = "/usr/local/bin/start-hyprland.sh";
@@ -13,6 +12,9 @@ const DEFAULT_SESSION: &str = "/usr/local/bin/start-hyprland.sh";
 pub struct Config {
     #[serde(default = "default_session")]
     pub session: String,
+
+    #[serde(default)]
+    pub avatar: Option<String>,
 
     #[serde(default)]
     pub theme: ThemeConfig,
@@ -68,23 +70,22 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             session: default_session(),
+            avatar: None,
             theme: ThemeConfig::default(),
         }
     }
 }
 
 impl Config {
-    /// Load configuration from the default path, falling back to defaults
+    /// Load configuration, checking local `grxxt.toml` then the system path
     pub fn load() -> Self {
-        Self::load_from(CONFIG_PATH)
-    }
-
-    /// Load configuration from a specific path
-    pub fn load_from<P: AsRef<Path>>(path: P) -> Self {
-        fs::read_to_string(path).map_or_else(
-            |_| Self::default(),
-            |content| toml::from_str(&content).unwrap_or_default(),
-        )
+        // Local config first (development), then system path (production)
+        fs::read_to_string("grxxt.toml")
+            .or_else(|_| fs::read_to_string(CONFIG_PATH))
+            .map_or_else(
+                |_| Self::default(),
+                |content| toml::from_str(&content).unwrap_or_default(),
+            )
     }
 }
 

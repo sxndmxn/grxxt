@@ -3,6 +3,7 @@
 //! A TUI-based greeter that runs directly on the TTY.
 
 mod app;
+mod avatar;
 mod config;
 mod greetd;
 mod power;
@@ -53,7 +54,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
 
     loop {
         // Render
-        terminal.draw(|frame| ui::render(frame, &app))?;
+        terminal.draw(|frame| ui::render(frame, &mut app))?;
 
         // Handle events with 500ms timeout for clock updates
         if event::poll(Duration::from_millis(500))? {
@@ -90,7 +91,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                     // Submit
                     KeyCode::Enter => {
                         if app.submit() {
-                            terminal.draw(|frame| ui::render(frame, &app))?;
+                            terminal.draw(|frame| ui::render(frame, &mut app))?;
                             if app.authenticate() {
                                 break;
                             }

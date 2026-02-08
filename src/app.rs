@@ -1,5 +1,6 @@
 //! Application state management for the TUI greeter
 
+use crate::avatar::Avatar;
 use crate::config::Config;
 use crate::greetd;
 use crate::theme::Theme;
@@ -20,12 +21,18 @@ pub struct App {
     pub focus: Focus,
     pub session_cmd: String,
     pub theme: Theme,
+    pub avatar: Option<Avatar>,
     pub should_quit: bool,
 }
 
 impl App {
     /// Create a new application with the given configuration
     pub fn new(config: &Config) -> Self {
+        let avatar = config
+            .avatar
+            .as_deref()
+            .and_then(crate::avatar::load);
+
         Self {
             username: String::new(),
             password: String::new(),
@@ -34,6 +41,7 @@ impl App {
             focus: Focus::Username,
             session_cmd: config.session.clone(),
             theme: Theme::from(&config.theme),
+            avatar,
             should_quit: false,
         }
     }

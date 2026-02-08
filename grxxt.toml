@@ -2,6 +2,7 @@
 # Install to: /etc/greetd/grxxt.toml
 
 session = "/home/sandman/.local/bin/start-hyprland.sh"
+# avatar = "/path/to/avatar.png"
 
 [theme]
 background = "#0b0a13"

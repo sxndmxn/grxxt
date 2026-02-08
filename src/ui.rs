@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use ratatui_image::{Resize, StatefulImage};
 
 use crate::app::{App, Focus};
 
@@ -15,7 +16,7 @@ use crate::app::{App, Focus};
 const PHI_COMP: f32 = 0.382;
 
 /// Render the entire UI
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let theme = &app.theme;
 
@@ -80,7 +81,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the main form area
-fn render_form(frame: &mut Frame, app: &App, area: Rect) {
+fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
 
     // Golden ratio form width: area.width * PHI_COMP, clamped [28, 50]
@@ -93,10 +94,14 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         .round()
         .clamp(28.0, 50.0) as u16;
 
-    // Fibonacci-based form height: avatar(5) + gap(2) + user(3) + gap(1) + pass(3) + gap(1) + msg(1) = 16
-    let form_height = 16_u16;
+    // Avatar height adapts: 10 with image, 5 for icon; shrinks to fit terminal
+    // Non-avatar portion: gap(2) + user(3) + gap(1) + pass(3) + gap(1) + msg(1) = 11
+    let base_height: u16 = 11;
+    let desired_avatar: u16 = if app.avatar.is_some() { 10 } else { 5 };
+    let avatar_height = desired_avatar.min(area.height.saturating_sub(base_height).max(3));
+    let form_height = avatar_height + base_height;
 
-    // Golden section vertical placement: form center at 38.2% from top
+    // Golden section vertical placement: form center at 38.2% from top, clamped to fit
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -106,36 +111,51 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         + f32::from(area.height)
             .mul_add(PHI_COMP, -(f32::from(form_height) / 2.0))
             .round()
-            .max(0.0) as u16;
+            .clamp(0.0, f32::from(area.height.saturating_sub(form_height))) as u16;
     let x = area.x + area.width.saturating_sub(form_width) / 2;
     let form_area = Rect::new(x, y, form_width, form_height);
 
-    // Avatar: width = form_width * PHI_COMP, clamped min 8, centered in form
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "form_width is small u16, product fits u16"
-    )]
-    let avatar_width = (f32::from(form_width) * PHI_COMP)
-        .round()
-        .max(8.0) as u16;
-    let avatar_x = form_area.x + (form_width.saturating_sub(avatar_width)) / 2;
-    let avatar_area = Rect::new(avatar_x, form_area.y, avatar_width, 5);
-    let avatar = Paragraph::new(Line::from(Span::styled(
-        "󰀄",
-        Style::default().fg(theme.foreground),
-    )))
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.foreground))
-            .style(Style::default().bg(theme.background)),
-    );
-    frame.render_widget(avatar, avatar_area);
+    // Avatar: full form width, adaptive height
+    let avatar_area = Rect::new(form_area.x, form_area.y, form_width, avatar_height);
 
-    // Fibonacci spacing: avatar(5) + gap(2) = offset 7
-    let username_area = Rect::new(form_area.x, form_area.y + 7, form_width, 3);
+    let avatar_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.foreground))
+        .style(Style::default().bg(theme.background));
+
+    if let Some(ref mut avatar) = app.avatar {
+        let inner = avatar_block.inner(avatar_area);
+        frame.render_widget(avatar_block, avatar_area);
+
+        // Center image: with halfblocks + font(4,8), cells are effectively square.
+        // Compute how many columns the fit image occupies, then offset.
+        let img_cols = (f32::from(inner.height) * avatar.aspect_ratio).round();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "result is small positive u16"
+        )]
+        let x_offset = (f32::from(inner.width).max(img_cols) - img_cols) as u16 / 2;
+        let centered = Rect::new(inner.x + x_offset, inner.y, inner.width.saturating_sub(x_offset * 2), inner.height);
+
+        let image = StatefulImage::default().resize(Resize::Fit(None));
+        frame.render_stateful_widget(image, centered, &mut avatar.protocol);
+    } else {
+        let icon = Paragraph::new(Line::from(Span::styled(
+            "󰀄",
+            Style::default().fg(theme.foreground),
+        )))
+        .alignment(Alignment::Center)
+        .block(avatar_block);
+        frame.render_widget(icon, avatar_area);
+    }
+
+    // Offsets derived from avatar height
+    let user_y = form_area.y + avatar_height + 2;
+    let pass_y = user_y + 4;
+    let msg_y = pass_y + 4;
+
+    let username_area = Rect::new(form_area.x, user_y, form_width, 3);
     render_input(
         frame,
         &app.username,
@@ -147,8 +167,7 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         username_area,
     );
 
-    // Fibonacci spacing: username(3) + gap(1) = offset 11
-    let password_area = Rect::new(form_area.x, form_area.y + 11, form_width, 3);
+    let password_area = Rect::new(form_area.x, pass_y, form_width, 3);
     let masked_password = "*".repeat(app.password.len());
     render_input(
         frame,
@@ -161,8 +180,7 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         password_area,
     );
 
-    // Fibonacci spacing: password(3) + gap(1) = offset 15
-    let msg_area = Rect::new(form_area.x, form_area.y + 15, form_width, 1);
+    let msg_area = Rect::new(form_area.x, msg_y, form_width, 1);
     if let Some(ref err) = app.error {
         let error = Paragraph::new(Line::from(Span::styled(
             err.to_uppercase(),
