@@ -15,7 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -33,6 +33,8 @@ use signal_hook::{
 use app::App;
 use config::Config;
 use power::PowerAction;
+
+const FULL_REDRAW_INTERVAL: Duration = Duration::from_secs(5);
 
 fn main() -> Result<()> {
     let config = Config::load()?;
@@ -82,12 +84,18 @@ where
     B::Error: Send + Sync + 'static,
 {
     let mut app = App::new(config);
+    let mut last_full_redraw = None;
 
     while !terminate.load(Ordering::Relaxed) {
-        // Render
-        terminal
-            .draw(|frame| ui::render(frame, &mut app))
-            .context("failed to render terminal frame")?;
+        // Kernel messages and other privileged console writers can bypass the
+        // alternate screen. Periodically invalidate Ratatui's diff buffer so
+        // those external writes cannot leave the login form corrupted.
+        let full_redraw =
+            last_full_redraw.is_none_or(|last: Instant| last.elapsed() >= FULL_REDRAW_INTERVAL);
+        draw_ui(terminal, &mut app, full_redraw)?;
+        if full_redraw {
+            last_full_redraw = Some(Instant::now());
+        }
 
         if terminate.load(Ordering::Relaxed) {
             break;
@@ -100,6 +108,9 @@ where
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
+                // Repair any external console output immediately on the next
+                // frame after the user interacts.
+                last_full_redraw = None;
 
                 #[allow(
                     clippy::wildcard_enum_match_arm,
@@ -140,8 +151,7 @@ where
 
                     // Submit
                     KeyCode::Enter if app.submit() => {
-                        terminal
-                            .draw(|frame| ui::render(frame, &mut app))
+                        draw_ui(terminal, &mut app, true)
                             .context("failed to render authentication status")?;
                         if app.authenticate() {
                             break;
@@ -158,6 +168,21 @@ where
         }
     }
 
+    Ok(())
+}
+
+fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, full_redraw: bool) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    if full_redraw {
+        terminal
+            .clear()
+            .context("failed to clear terminal for a full redraw")?;
+    }
+    terminal
+        .draw(|frame| ui::render(frame, app))
+        .context("failed to render terminal frame")?;
     Ok(())
 }
 
@@ -180,5 +205,34 @@ mod tests {
         let terminate = AtomicBool::new(true);
 
         assert!(run(&mut terminal, &Config::default(), &terminate).is_ok());
+    }
+
+    #[test]
+    fn full_redraw_repairs_external_terminal_writes() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(&Config::default());
+
+        draw_ui(&mut terminal, &mut app, false).unwrap();
+        let external = Buffer::with_lines(["external console output"]);
+        terminal
+            .backend_mut()
+            .draw(
+                external
+                    .content
+                    .iter()
+                    .zip(0_u16..)
+                    .map(|(cell, x)| (x, 0, cell)),
+            )
+            .unwrap();
+
+        draw_ui(&mut terminal, &mut app, true).unwrap();
+
+        let first_row = terminal.backend().buffer().content[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(!first_row.contains("external console output"));
+        assert!(first_row.contains("[F1]"));
     }
 }

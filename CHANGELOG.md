@@ -8,9 +8,9 @@ All notable changes to grxxt will be documented here.
 
 Initial release:
 
-- Username/password greetd authentication with strict single-secret prompt handling
+- Username/password greetd authentication with strict single-secret prompt handling and retry-safe session cancellation
 - Configurable compositor-agnostic session commands parsed without a shell
-- Balanced raw-TTY and alternate-screen cleanup, including termination signals
+- Balanced raw-TTY and alternate-screen cleanup, including termination signals and repair after external console writes
 - Optional bounded PNG/JPEG avatars with terminal graphics auto-detection
 - Observable, reaped systemd power operations
 - Strict TOML validation, theming, and responsive Ratatui rendering
