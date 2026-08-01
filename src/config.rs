@@ -2,11 +2,13 @@
 //!
 //! Reads settings from /etc/greetd/grxxt.toml
 
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
+use std::io::ErrorKind;
 
 const CONFIG_PATH: &str = "/etc/greetd/grxxt.toml";
-const DEFAULT_SESSION: &str = "/usr/local/bin/start-hyprland.sh";
+const DEFAULT_SESSION: &str = "/usr/bin/Hyprland";
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -78,14 +80,24 @@ impl Default for Config {
 
 impl Config {
     /// Load configuration, checking local `grxxt.toml` then the system path
-    pub fn load() -> Self {
-        // Local config first (development), then system path (production)
-        fs::read_to_string("grxxt.toml")
-            .or_else(|_| fs::read_to_string(CONFIG_PATH))
-            .map_or_else(
-                |_| Self::default(),
-                |content| toml::from_str(&content).unwrap_or_default(),
-            )
+    pub fn load() -> Result<Self> {
+        for path in ["grxxt.toml", CONFIG_PATH] {
+            match fs::read_to_string(path) {
+                Ok(content) => {
+                    return Self::parse(&content).with_context(|| format!("invalid config: {path}"))
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("failed to read config: {path}"))
+                }
+            }
+        }
+
+        Ok(Self::default())
+    }
+
+    fn parse(content: &str) -> Result<Self> {
+        toml::from_str(content).context("invalid TOML")
     }
 }
 
@@ -110,11 +122,17 @@ session = "/bin/bash"
 background = "#000000"
 foreground = "#ffffff"
 "##;
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::parse(toml).unwrap();
         assert_eq!(config.session, "/bin/bash");
         assert_eq!(config.theme.background, "#000000");
         assert_eq!(config.theme.foreground, "#ffffff");
         // Defaults for unspecified
         assert_eq!(config.theme.accent, "#f1c35f");
+    }
+
+    #[test]
+    fn malformed_config_is_rejected() {
+        let error = Config::parse("session = [not valid").unwrap_err();
+        assert!(error.to_string().contains("invalid TOML"));
     }
 }

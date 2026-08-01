@@ -7,17 +7,21 @@ echo "Installing grxxt..."
 # Install binary
 sudo install -Dm755 target/release/grxxt /usr/local/bin/grxxt
 
-# Install config
-sudo install -Dm644 grxxt.toml /etc/greetd/grxxt.toml
-
-# Backup existing greetd config if present
-if [[ -f /etc/greetd/config.toml ]]; then
-    sudo cp /etc/greetd/config.toml /etc/greetd/config.toml.bak
-    echo "Backed up existing config to /etc/greetd/config.toml.bak"
+# Install examples, preserving any live configuration
+sudo install -Dm644 grxxt.toml /etc/greetd/grxxt.toml.example
+if [[ -e /etc/greetd/grxxt.toml ]]; then
+    echo "Preserved existing /etc/greetd/grxxt.toml"
+else
+    sudo install -Dm644 grxxt.toml /etc/greetd/grxxt.toml
 fi
 
-# Install greetd config
-sudo install -Dm644 greetd-config.toml /etc/greetd/config.toml
+sudo install -Dm644 greetd-config.toml /etc/greetd/config.toml.grxxt.example
+if [[ -e /etc/greetd/config.toml ]]; then
+    echo "Preserved existing /etc/greetd/config.toml"
+    echo "Compare it with /etc/greetd/config.toml.grxxt.example"
+else
+    sudo install -Dm644 greetd-config.toml /etc/greetd/config.toml
+fi
 
 echo "Done! Enable greetd with: sudo systemctl enable greetd"
 echo "Test with: sudo systemctl start greetd (or switch to TTY1)"

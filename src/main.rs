@@ -27,26 +27,28 @@ use config::Config;
 use power::{reboot, shutdown, suspend};
 
 fn main() -> Result<()> {
-    // Load configuration
-    let config = Config::load();
+    let config = Config::load()?;
 
-    // Setup terminal
     terminal::enable_raw_mode()?;
+    let _terminal_guard = TerminalGuard;
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(cursor::Hide)?;
 
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    // Run the application
-    let result = run(&mut terminal, &config);
+    run(&mut terminal, &config)
+}
 
-    // Restore terminal
-    stdout().execute(cursor::Show)?;
-    stdout().execute(LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
+/// Restore the TTY even when setup or the event loop exits with an error.
+struct TerminalGuard;
 
-    result
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        stdout().execute(cursor::Show).ok();
+        stdout().execute(LeaveAlternateScreen).ok();
+        terminal::disable_raw_mode().ok();
+    }
 }
 
 fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
@@ -64,7 +66,10 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                     continue;
                 }
 
-                #[allow(clippy::wildcard_enum_match_arm, reason = "KeyCode has 20+ variants from external crate")]
+                #[allow(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "KeyCode has 20+ variants from external crate"
+                )]
                 match key.code {
                     // Power controls
                     KeyCode::F(1) => shutdown(),
@@ -72,7 +77,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                     KeyCode::F(3) => suspend(),
 
                     // Quit (development only)
-                    KeyCode::Esc => app.quit(),
+                    KeyCode::Esc if cfg!(debug_assertions) => app.quit(),
 
                     // Navigation
                     KeyCode::Tab => {

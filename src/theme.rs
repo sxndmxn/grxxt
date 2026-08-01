@@ -27,10 +27,8 @@ impl Default for Theme {
 impl From<&ThemeConfig> for Theme {
     fn from(config: &ThemeConfig) -> Self {
         Self {
-            background: parse_hex_color(&config.background)
-                .unwrap_or(Color::Rgb(0x0b, 0x0a, 0x13)),
-            foreground: parse_hex_color(&config.foreground)
-                .unwrap_or(Color::Rgb(0xf6, 0xf1, 0xe3)),
+            background: parse_hex_color(&config.background).unwrap_or(Color::Rgb(0x0b, 0x0a, 0x13)),
+            foreground: parse_hex_color(&config.foreground).unwrap_or(Color::Rgb(0xf6, 0xf1, 0xe3)),
             accent: parse_hex_color(&config.accent).unwrap_or(Color::Rgb(0xf1, 0xc3, 0x5f)),
             error: parse_hex_color(&config.error).unwrap_or(Color::Rgb(0xd1, 0x4b, 0x64)),
         }
@@ -58,9 +56,18 @@ mod tests {
 
     #[test]
     fn test_parse_hex_color() {
-        assert_eq!(parse_hex_color("#0b0a13"), Some(Color::Rgb(0x0b, 0x0a, 0x13)));
-        assert_eq!(parse_hex_color("#ffffff"), Some(Color::Rgb(0xff, 0xff, 0xff)));
-        assert_eq!(parse_hex_color("#000000"), Some(Color::Rgb(0x00, 0x00, 0x00)));
+        assert_eq!(
+            parse_hex_color("#0b0a13"),
+            Some(Color::Rgb(0x0b, 0x0a, 0x13))
+        );
+        assert_eq!(
+            parse_hex_color("#ffffff"),
+            Some(Color::Rgb(0xff, 0xff, 0xff))
+        );
+        assert_eq!(
+            parse_hex_color("#000000"),
+            Some(Color::Rgb(0x00, 0x00, 0x00))
+        );
         assert_eq!(parse_hex_color("invalid"), None);
         assert_eq!(parse_hex_color("#fff"), None);
     }

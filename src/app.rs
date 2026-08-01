@@ -28,10 +28,7 @@ pub struct App {
 impl App {
     /// Create a new application with the given configuration
     pub fn new(config: &Config) -> Self {
-        let avatar = config
-            .avatar
-            .as_deref()
-            .and_then(crate::avatar::load);
+        let avatar = config.avatar.as_deref().and_then(crate::avatar::load);
 
         Self {
             username: String::new(),
@@ -135,5 +132,64 @@ impl App {
     /// Request application quit
     pub const fn quit(&mut self) {
         self.should_quit = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        App::new(&Config::default())
+    }
+
+    #[test]
+    fn input_and_backspace_follow_focus() {
+        let mut app = app();
+
+        app.input_char('a');
+        app.input_char('é');
+        app.backspace();
+        assert_eq!(app.username, "a");
+        assert!(app.password.is_empty());
+
+        app.next_field();
+        app.input_char('p');
+        app.backspace();
+        assert!(app.password.is_empty());
+    }
+
+    #[test]
+    fn submit_validates_username_then_password() {
+        let mut app = app();
+
+        assert!(!app.submit());
+        assert_eq!(app.error.as_deref(), Some("Username required"));
+
+        app.input_char('a');
+        assert!(!app.submit());
+        assert_eq!(app.focus, Focus::Password);
+        assert!(app.error.is_none());
+
+        assert!(!app.submit());
+        assert_eq!(app.error.as_deref(), Some("Password required"));
+
+        app.input_char('p');
+        assert!(app.submit());
+        assert!(app.authenticating);
+        assert!(!app.submit());
+    }
+
+    #[test]
+    fn navigation_wraps_and_quit_sets_flag() {
+        let mut app = app();
+
+        app.prev_field();
+        assert_eq!(app.focus, Focus::Password);
+        app.next_field();
+        assert_eq!(app.focus, Focus::Username);
+
+        app.quit();
+        assert!(app.should_quit);
     }
 }

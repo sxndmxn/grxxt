@@ -14,6 +14,8 @@ use crate::app::{App, Focus};
 
 /// Complement of the golden ratio (1 - 1/φ ≈ 0.382)
 const PHI_COMP: f32 = 0.382;
+const MIN_FULL_WIDTH: u16 = 28;
+const MIN_FULL_HEIGHT: u16 = 17;
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -23,6 +25,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Clear with background color
     let bg = Block::default().style(Style::default().bg(theme.background));
     frame.render_widget(bg, area);
+
+    if area.width < MIN_FULL_WIDTH || area.height < MIN_FULL_HEIGHT {
+        let compact = Paragraph::new("grxxt")
+            .style(Style::default().fg(theme.accent).bg(theme.background))
+            .alignment(Alignment::Center);
+        frame.render_widget(compact, area);
+        return;
+    }
 
     // Layout: header at top, form centered
     let chunks = Layout::vertical([
@@ -53,7 +63,9 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let clock = Paragraph::new(vec![
         Line::from(Span::styled(
             clock_time,
-            Style::default().fg(theme.foreground).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             clock_date,
@@ -63,7 +75,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     .alignment(Alignment::Left)
     .block(Block::default().style(Style::default().bg(theme.background)));
 
-    frame.render_widget(clock, add_margin(chunks[0], 2, 1));
+    frame.render_widget(clock, add_margin(chunks[0], 2, 0));
 
     // Power buttons
     let power = Paragraph::new(Line::from(vec![
@@ -77,7 +89,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     .alignment(Alignment::Right)
     .block(Block::default().style(Style::default().bg(theme.background)));
 
-    frame.render_widget(power, add_margin(chunks[1], 2, 1));
+    frame.render_widget(power, add_margin(chunks[1], 2, 0));
 }
 
 /// Render the main form area
@@ -90,9 +102,7 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
         clippy::cast_sign_loss,
         reason = "area dimensions are small u16 values, product fits u16"
     )]
-    let form_width = (f32::from(area.width) * PHI_COMP)
-        .round()
-        .clamp(28.0, 50.0) as u16;
+    let form_width = (f32::from(area.width) * PHI_COMP).round().clamp(28.0, 50.0) as u16;
 
     // Avatar height adapts: 10 with image, 5 for icon; shrinks to fit terminal
     // Non-avatar portion: gap(2) + user(3) + gap(1) + pass(3) + gap(1) + msg(1) = 11
@@ -136,7 +146,12 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
             reason = "result is small positive u16"
         )]
         let x_offset = (f32::from(inner.width).max(img_cols) - img_cols) as u16 / 2;
-        let centered = Rect::new(inner.x + x_offset, inner.y, inner.width.saturating_sub(x_offset * 2), inner.height);
+        let centered = Rect::new(
+            inner.x + x_offset,
+            inner.y,
+            inner.width.saturating_sub(x_offset * 2),
+            inner.height,
+        );
 
         let image = StatefulImage::default().resize(Resize::Fit(None));
         frame.render_stateful_widget(image, centered, &mut avatar.protocol);
@@ -168,7 +183,7 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let password_area = Rect::new(form_area.x, pass_y, form_width, 3);
-    let masked_password = "*".repeat(app.password.len());
+    let masked_password = "*".repeat(app.password.chars().count());
     render_input(
         frame,
         &masked_password,
@@ -199,7 +214,10 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Render a single input field
-#[allow(clippy::too_many_arguments, reason = "render helper takes individual style params")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render helper takes individual style params"
+)]
 fn render_input(
     frame: &mut Frame,
     value: &str,
@@ -232,8 +250,11 @@ fn render_input(
 
     // Show cursor if focused
     if focused {
-        #[allow(clippy::cast_possible_truncation, reason = "input limited to ~30 chars, fits u16")]
-        let cursor_x = area.x + 1 + value.len() as u16;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "input limited to ~30 chars, fits u16"
+        )]
+        let cursor_x = area.x + 1 + value.chars().count() as u16;
         let cursor_y = area.y + 1;
         if cursor_x < area.x + area.width - 1 {
             frame.set_cursor_position((cursor_x, cursor_y));
@@ -248,5 +269,77 @@ const fn add_margin(area: Rect, horizontal: u16, vertical: u16) -> Rect {
         y: area.y + vertical,
         width: area.width.saturating_sub(horizontal * 2),
         height: area.height.saturating_sub(vertical * 2),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests can unwrap")]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn render_to_text(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        let mut output = String::new();
+
+        for row in buffer.content.chunks(width) {
+            for cell in row {
+                output.push_str(cell.symbol());
+            }
+            output.push('\n');
+        }
+
+        output
+    }
+
+    #[test]
+    fn renders_login_form_and_power_shortcuts() {
+        let mut app = App::new(&Config::default());
+        let date_before = Local::now().format("%a %d %b").to_string().to_uppercase();
+        let output = render_to_text(&mut app, 100, 30);
+        let date_after = Local::now().format("%a %d %b").to_string().to_uppercase();
+
+        assert!(output.contains("username"));
+        assert!(output.contains("password"));
+        assert!(output.contains(&date_before) || output.contains(&date_after));
+        assert!(output.contains("[F1]"));
+        assert!(output.contains("[F2]"));
+        assert!(output.contains("[F3]"));
+    }
+
+    #[test]
+    fn masks_password_by_character_not_utf8_byte() {
+        let mut app = App::new(&Config::default());
+        app.password = "éa".into();
+        let output = render_to_text(&mut app, 80, 24);
+
+        assert!(output.contains("**"));
+        assert!(!output.contains("***"));
+    }
+
+    #[test]
+    fn renders_validation_error() {
+        let mut app = App::new(&Config::default());
+        app.error = Some("Password required".into());
+        let output = render_to_text(&mut app, 80, 24);
+
+        assert!(output.contains("PASSWORD REQUIRED"));
+    }
+
+    #[test]
+    fn tiny_terminal_does_not_panic() {
+        let mut app = App::new(&Config::default());
+
+        let _output = render_to_text(&mut app, 10, 5);
     }
 }

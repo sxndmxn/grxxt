@@ -48,3 +48,13 @@ pub fn load(path: &str) -> Option<Avatar> {
         aspect_ratio,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_avatar_is_ignored() {
+        assert!(load("/file/that/does/not/exist.png").is_none());
+    }
+}
