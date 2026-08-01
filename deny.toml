@@ -1,0 +1,19 @@
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[licenses]
+include-dev = true
+confidence-threshold = 0.93
+unused-allowed-license = "deny"
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

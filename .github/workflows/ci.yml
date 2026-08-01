@@ -8,24 +8,49 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   quality:
     name: Format, lint, test, and package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write # rustsec/audit-check publishes a GitHub check run.
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check dependency policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: "1.90"
+          command: check bans licenses sources
+          arguments: --locked --all-features
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup default stable
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check installer scripts
+        run: bash -n install.sh tests/install.bash
 
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
@@ -35,3 +60,25 @@ jobs:
 
       - name: Verify crates.io package
         run: cargo package --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Test staged installation
+        run: bash tests/install.bash
+
+  msrv:
+    name: Minimum supported Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.90
+        run: rustup toolchain install 1.90 --profile minimal --no-self-update
+
+      - name: Check all targets at MSRV
+        run: cargo +1.90 check --locked --all-targets --all-features

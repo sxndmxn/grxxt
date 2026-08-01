@@ -1,7 +1,6 @@
 # grxxt
 
 [![CI](https://github.com/sxndmxn/grxxt/actions/workflows/ci.yml/badge.svg)](https://github.com/sxndmxn/grxxt/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/grxxt.svg)](https://crates.io/crates/grxxt)
 [![license](https://img.shields.io/badge/license-MIT-f1c35f.svg)](LICENSE)
 
 A brutalist TUI greeter for [greetd](https://sr.ht/~kennylevinsen/greetd/).
@@ -21,20 +20,18 @@ Additional visible or multi-secret authentication challenges are rejected cleanl
 
 ## Install
 
-Install the binary from crates.io:
+Clone the repository and build the release binary:
 
 ```sh
-cargo install grxxt
-```
-
-For a system greetd setup, clone the repository and run the installer:
-
-```sh
-cargo build --release
+git clone https://github.com/sxndmxn/grxxt.git
+cd grxxt
+cargo build --release --locked
 ./install.sh
 ```
 
-The installer places the binary in `/usr/local/bin` and example configuration in `/etc/greetd`. Existing greetd configuration is preserved.
+Building requires Rust 1.90 or newer. The installer places the binary in `/usr/local/bin` and example configuration in `/etc/greetd`. Existing greetd configuration, including symlinks, is preserved.
+
+Packagers can stage the same layout without `sudo` by setting an absolute destination root, for example `DESTDIR=/tmp/grxxt-stage ./install.sh`.
 
 Then enable greetd:
 
@@ -57,7 +54,9 @@ accent = "#f1c35f"
 error = "#d14b64"
 ```
 
-All fields are optional. A missing config uses these defaults; malformed configuration is reported instead of silently starting a different session.
+All fields are optional. grxxt reads `/etc/greetd/grxxt.toml`; a missing system config uses these defaults. For development, set an explicit path with `GRXXT_CONFIG=./grxxt.toml cargo run`. An explicitly selected missing file, unreadable files (including broken symlinks), malformed TOML, unknown fields, and invalid theme colors are reported instead of being ignored. Configuration files are limited to 64 KiB, with a 16 KiB limit on the session command.
+
+Avatar images are optional and never block login. They must resolve to regular files. PNG and JPEG sources are limited to 64 MiB on disk, 4096×4096 pixels, and 64 MiB of decoder memory, then resized for terminal rendering.
 
 Configure greetd to start grxxt as its greeter:
 
@@ -85,14 +84,22 @@ Power controls call `systemctl`, so they require systemd and the appropriate pol
 
 ## Development
 
-The same checks run locally and in CI:
+Run the release-quality checks before sending a change:
 
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --all-targets --all-features
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo package --locked
+cargo build --release --locked
+bash -n install.sh tests/install.bash
+bash tests/install.bash
+cargo audit --deny warnings
+cargo deny --locked --all-features check bans licenses sources
 ```
+
+CI also verifies that every target and feature builds on the minimum supported Rust version and rejects unapproved dependency licenses or sources.
+The final two local commands require the `cargo-audit` and `cargo-deny` subcommands, respectively.
 
 ## License
 

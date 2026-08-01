@@ -1,9 +1,57 @@
-//! greetd IPC communication module
+//! greetd IPC communication module.
+//!
+//! The protocol is a native-endian `u32` byte length followed by a JSON request or response.
+//! Frames are implemented locally so reads can be bounded before allocation and credential
+//! buffers can be zeroized immediately after transmission.
 
-use greetd_ipc::codec::SyncCodec;
-use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
+use zeroize::Zeroize;
+
+const IPC_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_FRAME_BYTES: usize = 128 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+enum Request {
+    CreateSession { username: String },
+    PostAuthMessageResponse { response: Option<String> },
+    StartSession { cmd: Vec<String>, env: Vec<String> },
+    CancelSession,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ErrorType {
+    Error,
+    AuthError,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AuthMessageType {
+    Visible,
+    Secret,
+    Info,
+    Error,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+enum Response {
+    Success,
+    Error {
+        error_type: ErrorType,
+        description: String,
+    },
+    AuthMessage {
+        auth_message_type: AuthMessageType,
+        auth_message: String,
+    },
+}
 
 pub struct GreetdClient {
     stream: UnixStream,
@@ -22,8 +70,10 @@ pub enum AuthError {
     ConnectionFailed(String),
     #[error("Protocol error: {0}")]
     ProtocolError(String),
-    #[error("{0}")]
-    AuthFailed(String),
+    #[error("Authentication failed")]
+    AuthFailed,
+    #[error("greetd request failed: {0}")]
+    RequestFailed(String),
     #[error("Invalid session command: {0}")]
     InvalidSessionCommand(String),
     #[error("Unsupported authentication prompt: {0}")]
@@ -37,19 +87,96 @@ impl GreetdClient {
 
         let stream = UnixStream::connect(&socket_path)
             .map_err(|error| AuthError::ConnectionFailed(error.to_string()))?;
+        stream
+            .set_read_timeout(Some(IPC_TIMEOUT))
+            .and_then(|()| stream.set_write_timeout(Some(IPC_TIMEOUT)))
+            .map_err(|error| {
+                AuthError::ConnectionFailed(format!("failed to configure greetd socket: {error}"))
+            })?;
 
         Ok(Self { stream })
     }
 
     fn send(&mut self, request: &Request) -> Result<(), AuthError> {
-        request
-            .write_to(&mut self.stream)
-            .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        write_request(&mut self.stream, request)
     }
 
     fn receive(&mut self) -> Result<Response, AuthError> {
-        Response::read_from(&mut self.stream)
-            .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        read_response(&mut self.stream)
+    }
+}
+
+fn write_request(writer: &mut impl Write, request: &Request) -> Result<(), AuthError> {
+    // Preallocate the full bounded frame so password-bearing JSON cannot leave
+    // stale copies behind through Vec reallocations before it is zeroized.
+    let mut body = Vec::with_capacity(MAX_FRAME_BYTES);
+    let result = serde_json::to_writer(&mut body, request)
+        .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        .and_then(|()| {
+            if body.len() > MAX_FRAME_BYTES {
+                return Err(AuthError::ProtocolError(format!(
+                    "request exceeds {MAX_FRAME_BYTES} bytes"
+                )));
+            }
+
+            let length = u32::try_from(body.len())
+                .map_err(|error| AuthError::ProtocolError(error.to_string()))?;
+            writer
+                .write_all(&length.to_ne_bytes())
+                .and_then(|()| writer.write_all(&body))
+                .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        });
+
+    body.zeroize();
+    result
+}
+
+fn read_response(reader: &mut impl Read) -> Result<Response, AuthError> {
+    let mut length_bytes = [0; 4];
+    reader
+        .read_exact(&mut length_bytes)
+        .map_err(|error| AuthError::ProtocolError(error.to_string()))?;
+    let length = usize::try_from(u32::from_ne_bytes(length_bytes))
+        .map_err(|error| AuthError::ProtocolError(error.to_string()))?;
+
+    if length > MAX_FRAME_BYTES {
+        return Err(AuthError::ProtocolError(format!(
+            "response exceeds {MAX_FRAME_BYTES} bytes"
+        )));
+    }
+
+    let mut body = vec![0; length];
+    let result = reader
+        .read_exact(&mut body)
+        .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        .and_then(|()| {
+            serde_json::from_slice(&body)
+                .map_err(|error| AuthError::ProtocolError(error.to_string()))
+        });
+    body.zeroize();
+    result
+}
+
+impl AuthError {
+    fn redact_secret(self, secret: &str) -> Self {
+        fn redact(message: String, secret: &str) -> String {
+            if secret.is_empty() {
+                message
+            } else {
+                message.replace(secret, "[redacted]")
+            }
+        }
+
+        match self {
+            Self::ConnectionFailed(message) => Self::ConnectionFailed(redact(message, secret)),
+            Self::ProtocolError(message) => Self::ProtocolError(redact(message, secret)),
+            Self::AuthFailed => Self::AuthFailed,
+            Self::RequestFailed(message) => Self::RequestFailed(redact(message, secret)),
+            Self::InvalidSessionCommand(message) => {
+                Self::InvalidSessionCommand(redact(message, secret))
+            }
+            Self::UnsupportedPrompt(message) => Self::UnsupportedPrompt(redact(message, secret)),
+        }
     }
 }
 
@@ -63,7 +190,15 @@ impl GreetdSession for GreetdClient {
     }
 
     fn post_auth_response(&mut self, response: Option<String>) -> Result<AuthState, AuthError> {
-        self.send(&Request::PostAuthMessageResponse { response })?;
+        let mut request = Request::PostAuthMessageResponse { response };
+        let send_result = self.send(&request);
+        if let Request::PostAuthMessageResponse {
+            response: Some(secret),
+        } = &mut request
+        {
+            secret.zeroize();
+        }
+        send_result?;
         response_to_auth_state(self.receive()?)
     }
 
@@ -75,10 +210,7 @@ impl GreetdSession for GreetdClient {
             Response::Error {
                 error_type,
                 description,
-            } => Err(AuthError::AuthFailed(format_error(
-                &error_type,
-                &description,
-            ))),
+            } => Err(response_error(&error_type, &description)),
             Response::AuthMessage { .. } => {
                 Err(AuthError::ProtocolError("Unexpected response".into()))
             }
@@ -93,10 +225,7 @@ impl GreetdSession for GreetdClient {
             Response::Error {
                 error_type,
                 description,
-            } => Err(AuthError::AuthFailed(format_error(
-                &error_type,
-                &description,
-            ))),
+            } => Err(response_error(&error_type, &description)),
             Response::AuthMessage { .. } => Err(AuthError::ProtocolError(
                 "Unexpected response while cancelling session".into(),
             )),
@@ -128,23 +257,17 @@ fn response_to_auth_state(response: Response) -> Result<AuthState, AuthError> {
         Response::Error {
             error_type,
             description,
-        } => Err(AuthError::AuthFailed(format_error(
-            &error_type,
-            &description,
-        ))),
+        } => Err(response_error(&error_type, &description)),
     }
 }
 
-fn format_error(error_type: &ErrorType, description: &str) -> String {
+fn response_error(error_type: &ErrorType, description: &str) -> AuthError {
     match error_type {
-        ErrorType::AuthError => {
-            if description.is_empty() {
-                "Authentication failed".to_string()
-            } else {
-                description.to_string()
-            }
+        ErrorType::AuthError => AuthError::AuthFailed,
+        ErrorType::Error if description.is_empty() => {
+            AuthError::RequestFailed("unspecified error".into())
         }
-        ErrorType::Error => description.to_string(),
+        ErrorType::Error => AuthError::RequestFailed(description.to_string()),
     }
 }
 
@@ -152,6 +275,7 @@ fn format_error(error_type: &ErrorType, description: &str) -> String {
 pub fn authenticate(username: &str, password: &str, session_cmd: &str) -> Result<(), AuthError> {
     let mut client = GreetdClient::connect()?;
     authenticate_with_client(&mut client, username, password, session_cmd)
+        .map_err(|error| error.redact_secret(password))
 }
 
 fn authenticate_with_client(
@@ -172,17 +296,15 @@ fn authenticate_with_client(
                 password_sent = true;
                 client.post_auth_response(Some(password.to_string()))?
             }
-            AuthState::NeedSecret(message) => {
+            AuthState::NeedSecret(_) => {
                 client.cancel_session().ok();
-                return Err(AuthError::UnsupportedPrompt(format!(
-                    "additional secret prompt: {message}"
-                )));
+                return Err(AuthError::UnsupportedPrompt(
+                    "additional secret prompt".into(),
+                ));
             }
-            AuthState::NeedInput(message) => {
+            AuthState::NeedInput(_) => {
                 client.cancel_session().ok();
-                return Err(AuthError::UnsupportedPrompt(format!(
-                    "visible prompt: {message}"
-                )));
+                return Err(AuthError::UnsupportedPrompt("visible prompt".into()));
             }
         };
     }
@@ -208,6 +330,8 @@ fn parse_session_command(session_cmd: &str) -> Result<Vec<String>, AuthError> {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::io::Cursor;
+    use std::thread;
 
     #[derive(Debug, PartialEq, Eq)]
     enum Call {
@@ -220,6 +344,7 @@ mod tests {
     struct MockClient {
         states: VecDeque<AuthState>,
         calls: Vec<Call>,
+        post_error: Option<AuthError>,
     }
 
     impl MockClient {
@@ -227,7 +352,13 @@ mod tests {
             Self {
                 states: states.into_iter().collect(),
                 calls: Vec::new(),
+                post_error: None,
             }
+        }
+
+        fn with_post_error(mut self, error: AuthError) -> Self {
+            self.post_error = Some(error);
+            self
         }
 
         fn next_state(&mut self) -> AuthState {
@@ -243,6 +374,9 @@ mod tests {
 
         fn post_auth_response(&mut self, response: Option<String>) -> Result<AuthState, AuthError> {
             self.calls.push(Call::Post(response));
+            if let Some(error) = self.post_error.take() {
+                return Err(error);
+            }
             Ok(self.next_state())
         }
 
@@ -333,6 +467,70 @@ mod tests {
     }
 
     #[test]
+    fn cancels_additional_secret_prompt() {
+        let mut client = MockClient::new([
+            AuthState::NeedSecret("Password:".into()),
+            AuthState::NeedSecret("One-time code:".into()),
+        ]);
+
+        let result = authenticate_with_client(&mut client, "alice", "hunter2", "/bin/sh");
+
+        assert!(matches!(
+            result,
+            Err(AuthError::UnsupportedPrompt(message)) if message == "additional secret prompt"
+        ));
+        assert_eq!(
+            client.calls,
+            [
+                Call::Create("alice".into()),
+                Call::Post(Some("hunter2".into())),
+                Call::Cancel,
+            ]
+        );
+    }
+
+    #[test]
+    fn authentication_failure_stops_before_session_start() {
+        let mut client = MockClient::new([AuthState::NeedSecret("Password:".into())])
+            .with_post_error(AuthError::AuthFailed);
+
+        let result = authenticate_with_client(&mut client, "alice", "test-secret", "/bin/sh");
+
+        assert!(matches!(result, Err(AuthError::AuthFailed)));
+        assert_eq!(
+            client.calls,
+            [
+                Call::Create("alice".into()),
+                Call::Post(Some("test-secret".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn acknowledges_multiple_informational_messages_in_order() {
+        let mut client = MockClient::new([
+            AuthState::Info("Notice".into()),
+            AuthState::Error("Previous failure".into()),
+            AuthState::NeedSecret("Password:".into()),
+            AuthState::Done,
+        ]);
+
+        let result = authenticate_with_client(&mut client, "alice", "hunter2", "/bin/sh");
+
+        assert!(result.is_ok());
+        assert_eq!(
+            client.calls,
+            [
+                Call::Create("alice".into()),
+                Call::Post(None),
+                Call::Post(None),
+                Call::Post(Some("hunter2".into())),
+                Call::Start(vec!["/bin/sh".into()]),
+            ]
+        );
+    }
+
+    #[test]
     fn response_conversion_preserves_prompt_type() {
         let state = response_to_auth_state(Response::AuthMessage {
             auth_message_type: AuthMessageType::Secret,
@@ -346,7 +544,7 @@ mod tests {
                 error_type: ErrorType::AuthError,
                 description: String::new(),
             }),
-            Err(AuthError::AuthFailed(message)) if message == "Authentication failed"
+            Err(AuthError::AuthFailed)
         ));
     }
 
@@ -365,12 +563,175 @@ mod tests {
     #[test]
     fn formats_empty_auth_error_consistently() {
         assert_eq!(
-            format_error(&ErrorType::AuthError, ""),
+            response_error(&ErrorType::AuthError, "").to_string(),
             "Authentication failed"
         );
         assert_eq!(
-            format_error(&ErrorType::AuthError, "Access denied"),
-            "Access denied"
+            response_error(&ErrorType::AuthError, "Access denied").to_string(),
+            "Authentication failed"
         );
+        assert_eq!(
+            response_error(&ErrorType::Error, "").to_string(),
+            "greetd request failed: unspecified error"
+        );
+    }
+
+    #[test]
+    fn authentication_errors_redact_the_submitted_secret() {
+        let error =
+            AuthError::RequestFailed("server echoed hunter2".into()).redact_secret("hunter2");
+
+        assert!(matches!(
+            error,
+            AuthError::RequestFailed(message)
+                if message == "server echoed [redacted]" && !message.contains("hunter2")
+        ));
+
+        assert_eq!(
+            AuthError::AuthFailed.redact_secret("a").to_string(),
+            "Authentication failed"
+        );
+    }
+
+    #[test]
+    fn request_codec_matches_greetd_wire_format() {
+        let mut framed = Vec::new();
+        write_request(
+            &mut framed,
+            &Request::PostAuthMessageResponse {
+                response: Some("test-secret".into()),
+            },
+        )
+        .unwrap();
+
+        let length = u32::from_ne_bytes(framed[0..4].try_into().unwrap()) as usize;
+        assert_eq!(length, framed.len() - 4);
+        let value: serde_json::Value = serde_json::from_slice(&framed[4..]).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "post_auth_message_response",
+                "response": "test-secret"
+            })
+        );
+    }
+
+    #[test]
+    fn request_codec_rejects_oversized_frame_before_writing() {
+        let request = Request::StartSession {
+            cmd: vec!["x".repeat(MAX_FRAME_BYTES)],
+            env: vec![],
+        };
+        let mut framed = Vec::new();
+
+        let result = write_request(&mut framed, &request);
+
+        assert!(matches!(
+            result,
+            Err(AuthError::ProtocolError(message)) if message.contains("request exceeds")
+        ));
+        assert!(framed.is_empty());
+    }
+
+    #[test]
+    fn response_codec_reads_greetd_wire_format() {
+        let body =
+            br#"{"type":"auth_message","auth_message_type":"secret","auth_message":"Password:"}"#;
+        let mut framed = Vec::from(u32::try_from(body.len()).unwrap().to_ne_bytes());
+        framed.extend_from_slice(body);
+
+        let response = read_response(&mut Cursor::new(framed)).unwrap();
+
+        assert!(matches!(
+            response,
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message,
+            } if auth_message == "Password:"
+        ));
+    }
+
+    #[test]
+    fn response_codec_rejects_oversized_frame_before_allocation() {
+        let oversized = u32::try_from(MAX_FRAME_BYTES).unwrap() + 1;
+        let result = read_response(&mut Cursor::new(oversized.to_ne_bytes()));
+
+        assert!(matches!(
+            result,
+            Err(AuthError::ProtocolError(message)) if message.contains("response exceeds")
+        ));
+    }
+
+    #[test]
+    fn concrete_client_completes_fake_greetd_exchange() {
+        let (client_stream, mut server_stream) = UnixStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let server = thread::spawn(move || {
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({"type": "create_session", "username": "alice"})
+            );
+            write_response_value(
+                &mut server_stream,
+                &Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".into(),
+                },
+            );
+
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({
+                    "type": "post_auth_message_response",
+                    "response": "test-secret"
+                })
+            );
+            write_response_value(&mut server_stream, &Response::Success);
+
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({
+                    "type": "start_session",
+                    "cmd": ["uwsm", "start", "hyprland.desktop"],
+                    "env": []
+                })
+            );
+            write_response_value(&mut server_stream, &Response::Success);
+        });
+
+        let mut client = GreetdClient {
+            stream: client_stream,
+        };
+        let result = authenticate_with_client(
+            &mut client,
+            "alice",
+            "test-secret",
+            "uwsm start hyprland.desktop",
+        );
+        drop(client);
+
+        server.join().unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    fn read_request_value(stream: &mut UnixStream) -> serde_json::Value {
+        let mut length = [0; 4];
+        stream.read_exact(&mut length).unwrap();
+        let mut body = vec![0; u32::from_ne_bytes(length) as usize];
+        stream.read_exact(&mut body).unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn write_response_value(stream: &mut UnixStream, response: &Response) {
+        let body = serde_json::to_vec(response).unwrap();
+        let length = u32::try_from(body.len()).unwrap().to_ne_bytes();
+        stream.write_all(&length).unwrap();
+        stream.write_all(&body).unwrap();
     }
 }

@@ -11,9 +11,13 @@ mod theme;
 mod ui;
 
 use std::io::stdout;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -21,23 +25,41 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::prelude::*;
+use signal_hook::{
+    consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM},
+    flag,
+};
 
 use app::App;
 use config::Config;
-use power::{reboot, shutdown, suspend};
+use power::PowerAction;
 
 fn main() -> Result<()> {
     let config = Config::load()?;
+    let terminate = termination_flag()?;
 
-    terminal::enable_raw_mode()?;
+    terminal::enable_raw_mode().context("failed to enable terminal raw mode")?;
     let _terminal_guard = TerminalGuard;
-    stdout().execute(EnterAlternateScreen)?;
-    stdout().execute(cursor::Hide)?;
+    stdout()
+        .execute(EnterAlternateScreen)
+        .context("failed to enter alternate screen")?;
+    stdout()
+        .execute(cursor::Hide)
+        .context("failed to hide terminal cursor")?;
 
     let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend).context("failed to initialize terminal backend")?;
 
-    run(&mut terminal, &config)
+    run(&mut terminal, &config, &terminate).context("terminal event loop failed")
+}
+
+fn termination_flag() -> Result<Arc<AtomicBool>> {
+    let terminate = Arc::new(AtomicBool::new(false));
+    for signal in [SIGHUP, SIGINT, SIGQUIT, SIGTERM] {
+        flag::register(signal, Arc::clone(&terminate))
+            .with_context(|| format!("failed to register signal handler for {signal}"))?;
+    }
+    Ok(terminate)
 }
 
 /// Restore the TTY even when setup or the event loop exits with an error.
@@ -51,18 +73,31 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
+fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
+    config: &Config,
+    terminate: &AtomicBool,
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     let mut app = App::new(config);
 
-    loop {
+    while !terminate.load(Ordering::Relaxed) {
         // Render
-        terminal.draw(|frame| ui::render(frame, &mut app))?;
+        terminal
+            .draw(|frame| ui::render(frame, &mut app))
+            .context("failed to render terminal frame")?;
+
+        if terminate.load(Ordering::Relaxed) {
+            break;
+        }
 
         // Handle events with 500ms timeout for clock updates
-        if event::poll(Duration::from_millis(500))? {
-            if let Event::Key(key) = event::read()? {
-                // Only handle key press events, not release
-                if key.kind != KeyEventKind::Press {
+        if event::poll(Duration::from_millis(500)).context("failed to poll terminal input")? {
+            if let Event::Key(key) = event::read().context("failed to read terminal input")? {
+                // Handle initial and repeated presses, never key-release events.
+                if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
 
@@ -72,9 +107,9 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                 )]
                 match key.code {
                     // Power controls
-                    KeyCode::F(1) => shutdown(),
-                    KeyCode::F(2) => reboot(),
-                    KeyCode::F(3) => suspend(),
+                    KeyCode::F(1) => run_power_action(&mut app, PowerAction::PowerOff),
+                    KeyCode::F(2) => run_power_action(&mut app, PowerAction::Reboot),
+                    KeyCode::F(3) => run_power_action(&mut app, PowerAction::Suspend),
 
                     // Quit (development only)
                     KeyCode::Esc if cfg!(debug_assertions) => app.quit(),
@@ -90,16 +125,26 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
                     KeyCode::BackTab => app.prev_field(),
 
                     // Input
-                    KeyCode::Char(c) => app.input_char(c),
+                    KeyCode::Char(c)
+                        if !key.modifiers.intersects(
+                            KeyModifiers::CONTROL
+                                | KeyModifiers::ALT
+                                | KeyModifiers::SUPER
+                                | KeyModifiers::HYPER
+                                | KeyModifiers::META,
+                        ) =>
+                    {
+                        app.input_char(c);
+                    }
                     KeyCode::Backspace => app.backspace(),
 
                     // Submit
-                    KeyCode::Enter => {
-                        if app.submit() {
-                            terminal.draw(|frame| ui::render(frame, &mut app))?;
-                            if app.authenticate() {
-                                break;
-                            }
+                    KeyCode::Enter if app.submit() => {
+                        terminal
+                            .draw(|frame| ui::render(frame, &mut app))
+                            .context("failed to render authentication status")?;
+                        if app.authenticate() {
+                            break;
                         }
                     }
 
@@ -108,10 +153,32 @@ fn run<B: Backend>(terminal: &mut Terminal<B>, config: &Config) -> Result<()> {
             }
         }
 
-        if app.should_quit {
+        if app.should_quit() {
             break;
         }
     }
 
     Ok(())
+}
+
+fn run_power_action(app: &mut App, action: PowerAction) {
+    if let Err(error) = power::execute(action) {
+        app.show_error(&error.to_string());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests can unwrap")]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn termination_flag_stops_before_waiting_for_input() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let terminate = AtomicBool::new(true);
+
+        assert!(run(&mut terminal, &Config::default(), &terminate).is_ok());
+    }
 }

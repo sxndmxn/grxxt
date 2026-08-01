@@ -109,7 +109,7 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     let base_height: u16 = 11;
     let desired_avatar: u16 = if app.avatar.is_some() { 10 } else { 5 };
     let avatar_height = desired_avatar.min(area.height.saturating_sub(base_height).max(3));
-    let form_height = avatar_height + base_height;
+    let form_height = avatar_height.saturating_add(base_height);
 
     // Golden section vertical placement: form center at 38.2% from top, clamped to fit
     #[allow(
@@ -117,12 +117,15 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
         clippy::cast_sign_loss,
         reason = "area dimensions are small u16 values, product fits u16"
     )]
-    let y = area.y
-        + f32::from(area.height)
+    let y = area.y.saturating_add(
+        f32::from(area.height)
             .mul_add(PHI_COMP, -(f32::from(form_height) / 2.0))
             .round()
-            .clamp(0.0, f32::from(area.height.saturating_sub(form_height))) as u16;
-    let x = area.x + area.width.saturating_sub(form_width) / 2;
+            .clamp(0.0, f32::from(area.height.saturating_sub(form_height))) as u16,
+    );
+    let x = area
+        .x
+        .saturating_add(area.width.saturating_sub(form_width) / 2);
     let form_area = Rect::new(x, y, form_width, form_height);
 
     // Avatar: full form width, adaptive height
@@ -137,23 +140,10 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
         let inner = avatar_block.inner(avatar_area);
         frame.render_widget(avatar_block, avatar_area);
 
-        // Center image: with halfblocks + font(4,8), cells are effectively square.
-        // Compute how many columns the fit image occupies, then offset.
-        let img_cols = (f32::from(inner.height) * avatar.aspect_ratio).round();
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "result is small positive u16"
-        )]
-        let x_offset = (f32::from(inner.width).max(img_cols) - img_cols) as u16 / 2;
-        let centered = Rect::new(
-            inner.x + x_offset,
-            inner.y,
-            inner.width.saturating_sub(x_offset * 2),
-            inner.height,
-        );
-
-        let image = StatefulImage::default().resize(Resize::Fit(None));
+        let resize = Resize::Fit(None);
+        let image_size = avatar.protocol.size_for(resize.clone(), inner.into());
+        let centered = centered_rect(inner, image_size.width, image_size.height);
+        let image = StatefulImage::default().resize(resize);
         frame.render_stateful_widget(image, centered, &mut avatar.protocol);
     } else {
         let icon = Paragraph::new(Line::from(Span::styled(
@@ -166,16 +156,16 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Offsets derived from avatar height
-    let user_y = form_area.y + avatar_height + 2;
-    let pass_y = user_y + 4;
-    let msg_y = pass_y + 4;
+    let user_y = form_area.y.saturating_add(avatar_height).saturating_add(2);
+    let pass_y = user_y.saturating_add(4);
+    let msg_y = pass_y.saturating_add(4);
 
     let username_area = Rect::new(form_area.x, user_y, form_width, 3);
     render_input(
         frame,
-        &app.username,
+        app.username(),
         "username",
-        app.focus == Focus::Username,
+        app.focus() == Focus::Username,
         theme.foreground,
         theme.accent,
         theme.background,
@@ -183,12 +173,12 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let password_area = Rect::new(form_area.x, pass_y, form_width, 3);
-    let masked_password = "*".repeat(app.password.chars().count());
+    let masked_password = "*".repeat(app.password_character_count());
     render_input(
         frame,
         &masked_password,
         "password",
-        app.focus == Focus::Password,
+        app.focus() == Focus::Password,
         theme.foreground,
         theme.accent,
         theme.background,
@@ -196,14 +186,14 @@ fn render_form(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let msg_area = Rect::new(form_area.x, msg_y, form_width, 1);
-    if let Some(ref err) = app.error {
+    if let Some(err) = app.error() {
         let error = Paragraph::new(Line::from(Span::styled(
             err.to_uppercase(),
             Style::default().fg(theme.error),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(error, msg_area);
-    } else if app.authenticating {
+    } else if app.is_authenticating() {
         let status = Paragraph::new(Line::from(Span::styled(
             "authenticating...",
             Style::default().fg(theme.foreground),
@@ -239,36 +229,56 @@ fn render_input(
         Span::styled(value, Style::default().fg(fg))
     };
 
-    let input = Paragraph::new(Line::from(display)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .style(Style::default().bg(bg)),
-    );
+    let (scroll, cursor_offset) = input_view(value, area.width);
+    let input = Paragraph::new(Line::from(display))
+        .scroll((0, scroll))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .style(Style::default().bg(bg)),
+        );
 
     frame.render_widget(input, area);
 
     // Show cursor if focused
     if focused {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "input limited to ~30 chars, fits u16"
-        )]
-        let cursor_x = area.x + 1 + value.chars().count() as u16;
-        let cursor_y = area.y + 1;
-        if cursor_x < area.x + area.width - 1 {
+        let cursor_x = area.x.saturating_add(1).saturating_add(cursor_offset);
+        let cursor_y = area.y.saturating_add(1);
+        let right_border = area.x.saturating_add(area.width).saturating_sub(1);
+        if cursor_x < right_border {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 }
 
+/// Return horizontal scroll and cursor cell offset for an input's inner width.
+fn input_view(value: &str, area_width: u16) -> (u16, u16) {
+    let display_width = u16::try_from(Line::from(value).width()).unwrap_or(u16::MAX);
+    let max_cursor_offset = area_width.saturating_sub(3);
+    let scroll = display_width.saturating_sub(max_cursor_offset);
+    (scroll, display_width.saturating_sub(scroll))
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        area.y
+            .saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    )
+}
+
 /// Add margin to a rect
 const fn add_margin(area: Rect, horizontal: u16, vertical: u16) -> Rect {
     Rect {
-        x: area.x + horizontal,
-        y: area.y + vertical,
-        width: area.width.saturating_sub(horizontal * 2),
-        height: area.height.saturating_sub(vertical * 2),
+        x: area.x.saturating_add(horizontal),
+        y: area.y.saturating_add(vertical),
+        width: area.width.saturating_sub(horizontal.saturating_mul(2)),
+        height: area.height.saturating_sub(vertical.saturating_mul(2)),
     }
 }
 
@@ -276,10 +286,13 @@ const fn add_margin(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 #[allow(clippy::unwrap_used, reason = "tests can unwrap")]
 mod tests {
     use super::*;
+    use crate::avatar::Avatar;
     use crate::config::Config;
+    use image::DynamicImage;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::Terminal;
+    use ratatui_image::picker::Picker;
 
     fn render_to_text(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -320,7 +333,9 @@ mod tests {
     #[test]
     fn masks_password_by_character_not_utf8_byte() {
         let mut app = App::new(&Config::default());
-        app.password = "éa".into();
+        app.next_field();
+        app.input_char('é');
+        app.input_char('a');
         let output = render_to_text(&mut app, 80, 24);
 
         assert!(output.contains("**"));
@@ -330,7 +345,7 @@ mod tests {
     #[test]
     fn renders_validation_error() {
         let mut app = App::new(&Config::default());
-        app.error = Some("Password required".into());
+        app.show_error("Password required");
         let output = render_to_text(&mut app, 80, 24);
 
         assert!(output.contains("PASSWORD REQUIRED"));
@@ -341,5 +356,38 @@ mod tests {
         let mut app = App::new(&Config::default());
 
         let _output = render_to_text(&mut app, 10, 5);
+    }
+
+    #[test]
+    fn input_view_uses_display_width_and_scrolls_long_values() {
+        assert_eq!(input_view("界a", 10), (0, 3));
+        assert_eq!(input_view("界界界界", 8), (3, 5));
+
+        let mut app = App::new(&Config::default());
+        for _ in 0..40 {
+            app.input_char('界');
+        }
+        let _output = render_to_text(&mut app, 28, 17);
+    }
+
+    #[test]
+    fn centered_rect_accounts_for_both_axes_and_clamps() {
+        let area = Rect::new(10, 20, 12, 8);
+        assert_eq!(centered_rect(area, 6, 4), Rect::new(13, 22, 6, 4));
+        assert_eq!(centered_rect(area, 20, 10), area);
+    }
+
+    #[test]
+    fn renders_avatar_protocol_on_test_backend() {
+        for (width, height) in [(28, 17), (80, 24)] {
+            let mut app = App::new(&Config::default());
+            app.avatar = Some(Avatar {
+                protocol: Picker::halfblocks().new_resize_protocol(DynamicImage::new_rgba8(4, 2)),
+            });
+
+            let output = render_to_text(&mut app, width, height);
+            assert!(!output.contains("󰀄"));
+            assert!(output.contains("username"));
+        }
     }
 }

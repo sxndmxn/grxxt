@@ -38,7 +38,7 @@ impl From<&ThemeConfig> for Theme {
 /// Parse a hex color string like "#0b0a13" into a ratatui Color
 fn parse_hex_color(s: &str) -> Option<Color> {
     let s = s.strip_prefix('#')?;
-    if s.len() != 6 {
+    if s.len() != 6 || !s.is_ascii() {
         return None;
     }
 
@@ -70,5 +70,6 @@ mod tests {
         );
         assert_eq!(parse_hex_color("invalid"), None);
         assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("#aééx"), None);
     }
 }

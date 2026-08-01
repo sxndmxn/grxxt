@@ -2,7 +2,8 @@
 name = "grxxt"
 version = "0.1.0"
 edition = "2021"
-description = "Brutalist greetd greeter"
+rust-version = "1.90"
+description = "Brutalist Linux TTY greeter for greetd"
 authors = ["sxndmxn"]
 license = "MIT"
 repository = "https://github.com/sxndmxn/grxxt"
@@ -10,23 +11,42 @@ homepage = "https://github.com/sxndmxn/grxxt"
 readme = "README.md"
 keywords = ["greetd", "greeter", "tui", "login"]
 categories = ["command-line-utilities"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/assets/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/deny.toml",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/SECURITY.md",
+    "/install.sh",
+    "/grxxt.toml",
+    "/greetd-config.toml",
+]
 
 [dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
-greetd_ipc = { version = "0.10", features = ["sync-codec"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
 shell-words = "1.1"
 chrono = "0.4"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "1.0"
-ratatui-image = { version = "4.2", default-features = false, features = ["crossterm"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+signal-hook = { version = "0.3.18", default-features = false }
+zeroize = "1.9"
+ratatui-image = { version = "11.0", default-features = false, features = ["crossterm"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [profile.release]
 lto = true
 strip = true
+# Unwinding preserves the terminal cleanup guard if a dependency panics.
+panic = "unwind"
 
 [lints.rust]
 dead_code = "deny"
