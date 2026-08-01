@@ -12,7 +12,7 @@
    bash -n install.sh tests/install.bash
    bash tests/install.bash
    cargo audit --deny warnings
-   cargo deny --locked --all-features check bans licenses sources
+   cargo deny --locked --all-features check advisories bans licenses sources
    ```
 
 3. Review `cargo package --locked --list` and test the packaged crate on a disposable TTY with a non-production greetd/PAM setup.

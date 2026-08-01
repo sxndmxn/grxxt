@@ -1,3 +1,6 @@
+[advisories]
+yanked = "deny"
+
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"

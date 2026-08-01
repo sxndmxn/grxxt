@@ -95,10 +95,10 @@ cargo build --release --locked
 bash -n install.sh tests/install.bash
 bash tests/install.bash
 cargo audit --deny warnings
-cargo deny --locked --all-features check bans licenses sources
+cargo deny --locked --all-features check advisories bans licenses sources
 ```
 
-CI also verifies that every target and feature builds on the minimum supported Rust version and rejects unapproved dependency licenses or sources.
+CI also verifies that every target and feature builds on the minimum supported Rust version and rejects known dependency advisories, yanked crates, unapproved licenses, or sources.
 The final two local commands require the `cargo-audit` and `cargo-deny` subcommands, respectively.
 
 ## License
