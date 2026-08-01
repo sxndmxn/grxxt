@@ -101,6 +101,10 @@ cargo deny --locked --all-features check advisories bans licenses sources
 CI also verifies that every target and feature builds on the minimum supported Rust version and rejects known dependency advisories, yanked crates, unapproved licenses, or sources.
 The final two local commands require the `cargo-audit` and `cargo-deny` subcommands, respectively.
 
+## Security
+
+Report suspected vulnerabilities using the process in [SECURITY.md](SECURITY.md). Never include real credentials or vulnerability details in a public contact request.
+
 ## License
 
 [MIT](LICENSE)
