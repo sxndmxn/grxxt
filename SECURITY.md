@@ -2,6 +2,10 @@
 
 grxxt handles login credentials and controls a system TTY. Please do not disclose suspected vulnerabilities in a public issue.
 
-Private vulnerability reporting is not enabled yet. Until it is, open a public issue titled `Security contact requested` without including vulnerability details; the maintainer will arrange a private channel. Never include real credentials in either the request or the eventual report.
+## Reporting a vulnerability
 
-Until the first release is published, security fixes target the latest `master` branch. After releases begin, supported versions will be listed here.
+Use [GitHub private vulnerability reporting](https://github.com/sxndmxn/grxxt/security/advisories/new) to report suspected vulnerabilities. Never include real credentials in a report.
+
+## Supported versions
+
+Security fixes target the latest published release and the current `master` branch. Older release lines are unsupported unless listed here.
