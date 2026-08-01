@@ -78,6 +78,11 @@ pub enum AuthError {
     InvalidSessionCommand(String),
     #[error("Unsupported authentication prompt: {0}")]
     UnsupportedPrompt(String),
+    #[error("{cause}; failed to cancel greetd session: {cleanup}")]
+    SessionCleanupFailed {
+        cause: Box<Self>,
+        cleanup: Box<Self>,
+    },
 }
 
 impl GreetdClient {
@@ -176,6 +181,10 @@ impl AuthError {
                 Self::InvalidSessionCommand(redact(message, secret))
             }
             Self::UnsupportedPrompt(message) => Self::UnsupportedPrompt(redact(message, secret)),
+            Self::SessionCleanupFailed { cause, cleanup } => Self::SessionCleanupFailed {
+                cause: Box::new(cause.redact_secret(secret)),
+                cleanup: Box::new(cleanup.redact_secret(secret)),
+            },
         }
     }
 }
@@ -288,28 +297,39 @@ fn authenticate_with_client(
     let mut state = client.create_session(username)?;
     let mut password_sent = false;
 
-    loop {
-        state = match state {
-            AuthState::Done => break,
-            AuthState::Info(_) | AuthState::Error(_) => client.post_auth_response(None)?,
-            AuthState::NeedSecret(_) if !password_sent => {
-                password_sent = true;
-                client.post_auth_response(Some(password.to_string()))?
-            }
-            AuthState::NeedSecret(_) => {
-                client.cancel_session().ok();
-                return Err(AuthError::UnsupportedPrompt(
-                    "additional secret prompt".into(),
-                ));
-            }
-            AuthState::NeedInput(_) => {
-                client.cancel_session().ok();
-                return Err(AuthError::UnsupportedPrompt("visible prompt".into()));
-            }
-        };
-    }
+    let result = (|| {
+        loop {
+            state = match state {
+                AuthState::Done => break,
+                AuthState::Info(_) | AuthState::Error(_) => client.post_auth_response(None)?,
+                AuthState::NeedSecret(_) if !password_sent => {
+                    password_sent = true;
+                    client.post_auth_response(Some(password.to_string()))?
+                }
+                AuthState::NeedSecret(_) => {
+                    return Err(AuthError::UnsupportedPrompt(
+                        "additional secret prompt".into(),
+                    ));
+                }
+                AuthState::NeedInput(_) => {
+                    return Err(AuthError::UnsupportedPrompt("visible prompt".into()));
+                }
+            };
+        }
 
-    client.start_session(cmd)
+        client.start_session(cmd)
+    })();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(cause) => match client.cancel_session() {
+            Ok(()) => Err(cause),
+            Err(cleanup) => Err(AuthError::SessionCleanupFailed {
+                cause: Box::new(cause),
+                cleanup: Box::new(cleanup),
+            }),
+        },
+    }
 }
 
 fn parse_session_command(session_cmd: &str) -> Result<Vec<String>, AuthError> {
@@ -345,6 +365,7 @@ mod tests {
         states: VecDeque<AuthState>,
         calls: Vec<Call>,
         post_error: Option<AuthError>,
+        cancel_error: Option<AuthError>,
     }
 
     impl MockClient {
@@ -353,11 +374,17 @@ mod tests {
                 states: states.into_iter().collect(),
                 calls: Vec::new(),
                 post_error: None,
+                cancel_error: None,
             }
         }
 
         fn with_post_error(mut self, error: AuthError) -> Self {
             self.post_error = Some(error);
+            self
+        }
+
+        fn with_cancel_error(mut self, error: AuthError) -> Self {
+            self.cancel_error = Some(error);
             self
         }
 
@@ -387,7 +414,7 @@ mod tests {
 
         fn cancel_session(&mut self) -> Result<(), AuthError> {
             self.calls.push(Call::Cancel);
-            Ok(())
+            self.cancel_error.take().map_or(Ok(()), Err)
         }
     }
 
@@ -501,7 +528,33 @@ mod tests {
             client.calls,
             [
                 Call::Create("alice".into()),
-                Call::Post(Some("test-secret".into()))
+                Call::Post(Some("test-secret".into())),
+                Call::Cancel,
+            ]
+        );
+    }
+
+    #[test]
+    fn cancellation_failure_is_observable() {
+        let mut client = MockClient::new([AuthState::NeedSecret("Password:".into())])
+            .with_post_error(AuthError::AuthFailed)
+            .with_cancel_error(AuthError::RequestFailed("cleanup denied".into()));
+
+        let result = authenticate_with_client(&mut client, "alice", "test-secret", "/bin/sh");
+
+        assert!(matches!(
+            result,
+            Err(AuthError::SessionCleanupFailed { cause, cleanup })
+                if matches!(*cause, AuthError::AuthFailed)
+                    && matches!(*cleanup, AuthError::RequestFailed(ref message)
+                        if message == "cleanup denied")
+        ));
+        assert_eq!(
+            client.calls,
+            [
+                Call::Create("alice".into()),
+                Call::Post(Some("test-secret".into())),
+                Call::Cancel,
             ]
         );
     }
@@ -590,6 +643,24 @@ mod tests {
         assert_eq!(
             AuthError::AuthFailed.redact_secret("a").to_string(),
             "Authentication failed"
+        );
+    }
+
+    #[test]
+    fn cleanup_errors_redact_the_submitted_secret_recursively() {
+        let error = AuthError::SessionCleanupFailed {
+            cause: Box::new(AuthError::RequestFailed(
+                "authentication echoed hunter2".into(),
+            )),
+            cleanup: Box::new(AuthError::ProtocolError("cleanup echoed hunter2".into())),
+        }
+        .redact_secret("hunter2")
+        .to_string();
+
+        assert!(!error.contains("hunter2"));
+        assert_eq!(
+            error,
+            "greetd request failed: authentication echoed [redacted]; failed to cancel greetd session: Protocol error: cleanup echoed [redacted]"
         );
     }
 
@@ -718,6 +789,61 @@ mod tests {
 
         server.join().unwrap();
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn concrete_client_cancels_failed_authentication() {
+        let (client_stream, mut server_stream) = UnixStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        let server = thread::spawn(move || {
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({"type": "create_session", "username": "alice"})
+            );
+            write_response_value(
+                &mut server_stream,
+                &Response::AuthMessage {
+                    auth_message_type: AuthMessageType::Secret,
+                    auth_message: "Password:".into(),
+                },
+            );
+
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({
+                    "type": "post_auth_message_response",
+                    "response": "test-secret"
+                })
+            );
+            write_response_value(
+                &mut server_stream,
+                &Response::Error {
+                    error_type: ErrorType::AuthError,
+                    description: "authentication failed".into(),
+                },
+            );
+
+            assert_eq!(
+                read_request_value(&mut server_stream),
+                serde_json::json!({"type": "cancel_session"})
+            );
+            write_response_value(&mut server_stream, &Response::Success);
+        });
+
+        let mut client = GreetdClient {
+            stream: client_stream,
+        };
+        let result = authenticate_with_client(&mut client, "alice", "test-secret", "/bin/sh");
+        drop(client);
+
+        server.join().unwrap();
+        assert!(matches!(result, Err(AuthError::AuthFailed)));
     }
 
     fn read_request_value(stream: &mut UnixStream) -> serde_json::Value {
